@@ -12,19 +12,29 @@ export class RedisService implements OnModuleInit, OnModuleDestroy {
   private client: Redis;
 
   onModuleInit() {
-    const host = process.env.REDIS_HOST || '127.0.0.1';
-    const port = parseInt(process.env.REDIS_PORT || '6379', 10);
-    const password = process.env.REDIS_PASSWORD || undefined;
-    this.client = new Redis({
-      host,
-      port,
-      password,
-      lazyConnect: true, // ensures connection on demand
+    // const host = process.env.REDIS_HOST || '127.0.0.1';
+    // const port = parseInt(process.env.REDIS_PORT || '6379', 10);
+    // const password = process.env.REDIS_PASSWORD || undefined;
+    // this.client = new Redis({
+    //   host,
+    //   port,
+    //   password,
+    //   lazyConnect: true, // ensures connection on demand
+    // });
+
+    const redisUrl = process.env.REDIS_URL;
+
+    if (!redisUrl) {
+      throw new Error('❌ Missing REDIS_URL environment variable');
+    }
+
+    this.client = new Redis(redisUrl, {
+      lazyConnect: true,
     });
 
     this.client
       .connect()
-      .then(() => this.logger.log(`✅ Connected to Redis at ${host}:${port}`))
+      .then(() => this.logger.log(`✅ Connected to Redis`))
       .catch((err) => this.logger.error('❌ Redis connection failed:', err));
   }
 
