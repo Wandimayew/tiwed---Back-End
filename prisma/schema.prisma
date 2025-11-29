@@ -1,0 +1,472 @@
+generator client {
+  provider = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"] // keep if your Prisma supports it
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+  // Optional: set relationMode = "prisma" or "foreignKeys" depending on your infra
+  // relationMode = "foreignKeys"
+}
+
+/*
+  Notes:
+  - Use UUID primary keys for safe sharding and easier microservice data ownership.
+  - DateTime fields are UTC (PostgreSQL timestamptz).
+  - Use Json for flexible metadata and ML/analytics feature storage.
+  - PostGIS geography column will be created via raw SQL migration (see SQL snippets below).
+*/
+
+enum Gender {
+  MALE
+  FEMALE
+  PREFER_NOT_TO_SAY
+}
+
+enum ActionType {
+  LIKE
+  PASS
+  SUPERLIKE
+  FAVORITE
+}
+
+enum ContentType {
+  TEXT
+  IMAGE
+  STICKER
+  SYSTEM
+}
+
+enum VerificationType {
+  EMAIL
+  PHONE
+  ID_DOCUMENT
+  LIVENESS
+}
+
+enum VerificationStatus {
+  UNVERIFIED
+  PENDING
+  VERIFIED
+  REJECTED
+}
+
+enum SubscriptionProvider {
+  TELEBIRR
+  CHAPA
+  CBE
+  MPESSA
+  STRIPE
+  APPLE
+  GOOGLE
+  OTHER
+}
+
+enum SubscriptionStatus {
+  ACTIVE
+  CANCELLED
+  EXPIRED
+  PAST_DUE
+}
+
+enum ReportStatus {
+  OPEN
+  UNDER_REVIEW
+  ACTION_TAKEN
+  DISMISSED
+}
+
+enum RelationshipIntent {
+  CASUAL
+  SERIOUS
+  FRIENDSHIP
+  MARRAGE
+  OTHER
+}
+
+model User {
+  id                 String         @id @default(uuid())
+  fullName           String
+  email              String?        @unique
+  phone              String?        @unique
+  passwordHash       String?        // null for social login
+  provider       String         @default("local")
+  isEmailVerified    Boolean        @default(false)
+  isPhoneVerified    Boolean        @default(false)
+  isActive           Boolean        @default(true)
+  hasCompletedProfile Boolean       @default(false)
+  role               String         @default("USER")
+  deletedAt          DateTime?
+  locale             String?        @default("en")
+  timezone           String?
+  createdAt          DateTime       @default(now())
+  lastLoginAt        DateTime?
+  providerId     String?  // provider unique id
+  mfaEnabled     Boolean  @default(false)
+  mfaSecret      String?  // TOTP secret
+  updatedAt      DateTime? @updatedAt
+
+  // Relations
+  profile            UserProfile?
+  photos             Photo[]
+  swipesFrom         Swipe[]        @relation("swipesFrom")
+  swipesTo           Swipe[]        @relation("swipesTo")
+  matchesA           Match[]        @relation("matchesA")
+  matchesB           Match[]        @relation("matchesB")
+  conversationsAsSender Message[]    @relation("messagesSender")
+  reportsMade        Report[]       @relation("reporter")
+  reportsTargeted    Report[]       @relation("target")
+  subscriptions      Subscription[]
+  refreshTokens      RefreshToken[]
+  blocksMade         Block[]        @relation("blocker")
+  blocksReceived     Block[]        @relation("blocked")
+  verifications      Verification[]
+  auditLogs          AuditLog[]
+  preferences Preference? @relation("UserPreferences")
+  notifications Notification[]
+
+  @@index([createdAt])
+  @@index([lastLoginAt])
+   @@index([email])
+  @@unique([provider, providerId])
+}
+
+model UserPhoto {
+  id          String   @id @default(cuid())
+  profileId   String
+  url         String
+  publicId    String?
+  format      String?
+  width       Int?
+  height      Int?
+  resourceType String?
+  isPrimary   Boolean  @default(false)
+
+  createdAt   DateTime @default(now())
+
+  profile     UserProfile @relation(fields: [profileId], references: [id])
+}
+
+
+
+/*
+  Public profile / user-visible fields are in UserProfile.
+  Keep User (auth) and UserProfile (public) separate to make data ownership clear.
+*/
+model UserProfile {
+  id                   String    @id @default(uuid())
+  userId               String    @unique
+  user                 User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  displayName          String
+  birthdate            DateTime
+  gender               Gender
+  genderPreferences    String[]  // array of desired genders
+  about                String?   @db.VarChar(2000)
+  interests            String[]  // tags
+  work                 String?
+  education            String?
+  relationshipIntent   RelationshipIntent?
+  photosOrder          String[]  // ordered list of photo UUIDs
+  primaryPhotoId       String?   // FK to Photo.id (referential set in app or via manual FK)
+  gallery              UserPhoto[] // other photos
+  search_vector        Unsupported("tsvector")?
+
+  ageMin               Int?
+  ageMax               Int?
+  distanceMaxKm        Int?      @default(50)
+  // location will be created as PostGIS geography(Point,4326) via raw SQL migration (see SQL snippet below).
+  // Prisma doesn't have a first-class PostGIS type; create a placeholder column if needed or use Unsupported.
+  // We'll add a "location_lat" and "location_lng" for quick queries and for Prisma compatibility.
+  locationLat          Float?
+  locationLng          Float?
+  lastLocationUpdate   DateTime?
+  visibility           String    @default("public")
+  isProfileComplete    Boolean   @default(false)
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([userId])
+  @@index([gender])
+  @@index([createdAt])
+  @@map("UserProfile") 
+}
+
+model Photo {
+  id                String   @id @default(uuid())
+  userId            String
+  user              User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  fileKey           String   // object store key
+  url               String
+  thumbUrl          String?
+  width             Int?
+  height            Int?
+  mimeType          String?
+  sizeBytes         BigInt?
+  isPrimary         Boolean  @default(false)
+  isApproved        Boolean  @default(false)
+  moderationResult  Json?
+  metadata          Json?    // EXIF, device info, etc
+  createdAt         DateTime @default(now())
+
+  @@index([userId])
+  @@index([isApproved])
+}
+
+/*
+  Preferences can be stored per-user (optional).
+  Kept separate from UserProfile to allow toggles without touching public profile data.
+*/
+model Preference {
+  id               String  @id @default(uuid())
+  userId           String  @unique
+  user             User    @relation("UserPreferences", fields: [userId], references: [id], onDelete: Cascade)
+  preferredGenders String[]
+  ageMin           Int?
+  ageMax           Int?
+  distanceMaxKm    Int?
+  additional       Json?   // e.g., smoking, kids, etc
+  createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
+}
+
+/*
+  Interactions: likes, passes, superlikes.
+  Use unique constraint (fromUserId, toUserId) to provide single-state per pair (upsert on actions).
+*/
+model Swipe {
+  id          String   @id @default(uuid())
+  fromUserId  String
+  toUserId    String
+  fromUser    User     @relation("swipesFrom", fields: [fromUserId], references: [id], onDelete: Cascade)
+  toUser      User     @relation("swipesTo", fields: [toUserId], references: [id], onDelete: Cascade)
+  action      ActionType
+  source      String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([fromUserId, toUserId])
+  @@index([fromUserId, createdAt])
+  @@index([toUserId, createdAt])
+}
+
+/*
+  Matches: when two users mutually like each other.
+  We enforce uniqueness of (userAId, userBId) at DB level; application should store userAId < userBId ordering.
+*/
+model Match {
+  id               String   @id @default(uuid())
+  userAId          String
+  userBId          String
+  userA            User     @relation("matchesA", fields: [userAId], references: [id], onDelete: Cascade)
+  userB            User     @relation("matchesB", fields: [userBId], references: [id], onDelete: Cascade)
+  matchedAt        DateTime @default(now())
+  initiatorId      String?  // who liked second
+  isActive         Boolean  @default(true)
+  matchScore       Float?   // internal scoring
+  firstMessageSent Boolean  @default(false)
+   conversation Conversation?
+
+  @@unique([userAId, userBId])
+  @@index([userAId])
+  @@index([userBId])
+  @@index([matchedAt])
+}
+
+/*
+  Conversations are tied to matches (1:1)
+*/
+model Conversation {
+  id         String   @id @default(uuid())
+  matchId    String   @unique
+  match      Match    @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+  messages   Message[]
+}
+
+/*
+  Messages: partitioning recommended in production by month or conversation hash.
+*/
+model Message {
+  id             String      @id @default(uuid())
+  conversationId String?
+  conversation   Conversation? @relation(fields: [conversationId], references: [id], onDelete: Cascade)
+  senderId       String
+  sender         User         @relation("messagesSender", fields: [senderId], references: [id], onDelete: Cascade)
+  content        String?
+  contentType    ContentType  @default(TEXT)
+  mediaUrl       String?
+  isRead         Boolean      @default(false)
+  deliveredAt    DateTime?
+  metadata       Json?
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, createdAt])
+  @@index([senderId, createdAt])
+}
+
+/*
+  Reports for moderation
+*/
+model Report {
+  id               String      @id @default(uuid())
+  reporterId       String
+  targetUserId     String?
+  targetPhotoId    String?
+  targetMessageId  String?
+  reason           String
+  details          String?
+  status           ReportStatus @default(OPEN)
+  createdAt        DateTime     @default(now())
+  actionedBy       String?
+  actionedAt       DateTime?
+  metadata         Json?
+
+  reporter         User?        @relation("reporter", fields: [reporterId], references: [id], onDelete: SetNull)
+  target           User?        @relation("target", fields: [targetUserId], references: [id], onDelete: SetNull)
+
+  @@index([status])
+  @@index([createdAt])
+}
+
+/*
+  Verifications: email/phone/ID/liveness
+*/
+model Verification {
+  id          String              @id @default(uuid())
+  userId      String
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        VerificationType
+  status      VerificationStatus  @default(UNVERIFIED)
+  payload     Json?
+  createdAt   DateTime            @default(now())
+  updatedAt   DateTime            @updatedAt
+
+  @@index([userId])
+  @@index([type, status])
+}
+
+/*
+  Subscriptions & billing
+*/
+model Subscription {
+  id             String               @id @default(uuid())
+  userId         String
+  user           User                 @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider       SubscriptionProvider
+  plan           String
+  status         SubscriptionStatus   @default(ACTIVE)
+  startAt        DateTime
+  endAt          DateTime?
+  metadata       Json?
+  createdAt      DateTime             @default(now())
+  updatedAt      DateTime             @updatedAt
+
+  @@index([userId])
+  @@index([status])
+}
+
+/*
+  Blocks
+*/
+model Block {
+  id         String   @id @default(uuid())
+  blockerId  String
+  blockedId  String
+  blocker    User     @relation("blocker", fields: [blockerId], references: [id], onDelete: Cascade)
+  blocked    User     @relation("blocked", fields: [blockedId], references: [id], onDelete: Cascade)
+  createdAt  DateTime @default(now())
+
+  @@unique([blockerId, blockedId])
+  @@index([blockerId])
+}
+
+/*
+  Refresh tokens (store hashed tokens)
+*/
+model RefreshToken {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tokenHash  String
+  expiresAt  DateTime
+  revokedAt  DateTime?
+  deviceInfo Json?
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+  @@index([expiresAt])
+}
+
+/*
+  Audit logs for admin actions (tamper-evident recommended)
+*/
+model AuditLog {
+  id         String   @id @default(uuid())
+  actorId    String?
+  actor      User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action     String
+  target     String?
+  payload    Json?
+  createdAt  DateTime @default(now())
+
+  @@index([actorId])
+  @@index([createdAt])
+}
+
+/*
+  Notifications
+*/
+model Notification {
+  id         String   @id @default(uuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title      String
+  body       String?
+  data       Json?
+  isRead     Boolean  @default(false)
+  channel    String?  // "push", "email", "in-app"
+  createdAt  DateTime @default(now())
+
+  @@index([userId, isRead])
+  @@index([createdAt])
+}
+
+/*
+  Analytics events (append-only). Consider partitioning or use ClickHouse for high-volume analytics.
+*/
+model UserActivity {
+  id         String   @id @default(uuid())
+  userId     String?
+  eventType  String
+  metadata   Json?
+  createdAt  DateTime @default(now())
+
+  @@index([userId, eventType])
+  @@index([createdAt])
+}
+
+/*
+  Moderation queue (human review)
+*/
+model ModerationQueue {
+  id            String  @id @default(uuid())
+  targetType    String  // "photo" | "message" | "profile"
+  targetId      String
+  userId        String? // who submitted content
+  priority      Int     @default(0)
+  status        String  @default("pending")
+  details       Json?
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@index([status])
+  @@index([priority])
+}
+
+/*
+  Recommended: materialized view or public projection tables for performance (created via SQL migrations)
+  e.g., user_profile_public which contains denormalized / read-optimized fields used by discovery.
+  Create this outside of Prisma migrations or via `prisma.$executeRaw` migration step.
+*/

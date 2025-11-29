@@ -1,0 +1,13 @@
+{
+    "folders": [
+        {
+            "path": "../../../../tiwed-mobile"
+        },
+        {
+            "path": "../../../../tiwed-frontend"
+        },
+        {
+            "path": "../../.."
+        }
+    ]
+}
